@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 
 from codeweave.models import (
@@ -14,6 +14,7 @@ from codeweave.models import (
     ToolCallDelta,
     ToolResult,
 )
+from codeweave.prompts import PromptComposer
 from codeweave.providers import LLMProvider
 from codeweave.tools import ToolRegistry
 
@@ -31,20 +32,41 @@ class Agent:
         tools: ToolRegistry,
         *,
         max_turns: int = 20,
+        prompt_composer: PromptComposer | None = None,
     ) -> None:
         if max_turns < 1:
             raise ValueError("max_turns must be positive")
         self.provider = provider
         self.tools = tools
         self.max_turns = max_turns
+        self.prompt_composer = prompt_composer
         self.messages: list[Message] = []
         self.turn_count = 0
 
-    async def run(self, prompt: str) -> AsyncIterator[StreamEvent]:
+    async def run(
+        self,
+        prompt: str,
+        *,
+        runtime_context: Mapping[str, object] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be a non-empty string")
 
-        self.messages = [Message.user(prompt)]
+        messages = [Message.user(prompt)]
+        if self.prompt_composer is not None:
+            tool_descriptions = [
+                f"{spec.name}: {spec.description}" for spec in self.tools.specs()
+            ]
+            system_prompt = self.prompt_composer.compose(
+                tool_descriptions=tool_descriptions,
+                task=prompt,
+                runtime_context=runtime_context,
+            )
+            messages.insert(0, Message.system(system_prompt))
+        elif runtime_context:
+            raise ValueError("runtime_context requires a prompt_composer")
+
+        self.messages = messages
         self.turn_count = 0
 
         for turn_index in range(self.max_turns):
