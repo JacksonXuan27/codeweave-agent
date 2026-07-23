@@ -14,6 +14,7 @@ from codeweave.models import (
     ToolCallDelta,
     ToolResult,
 )
+from codeweave.permissions import PermissionChecker, PermissionMode
 from codeweave.prompts import PromptComposer
 from codeweave.providers import LLMProvider
 from codeweave.tools import ToolRegistry
@@ -33,6 +34,7 @@ class Agent:
         *,
         max_turns: int = 20,
         prompt_composer: PromptComposer | None = None,
+        permission_checker: PermissionChecker | None = None,
     ) -> None:
         if max_turns < 1:
             raise ValueError("max_turns must be positive")
@@ -40,6 +42,7 @@ class Agent:
         self.tools = tools
         self.max_turns = max_turns
         self.prompt_composer = prompt_composer
+        self.permission_checker = permission_checker or PermissionChecker(PermissionMode.CONFIRM)
         self.messages: list[Message] = []
         self.turn_count = 0
 
@@ -137,7 +140,17 @@ class Agent:
                 if call_id in invalid_calls:
                     result = ToolResult(call_id, False, error=invalid_calls[call_id])
                 else:
-                    result = self.tools.execute(completed_calls[call_id])
+                    tool_call = completed_calls[call_id]
+                    spec = self.tools.get(tool_call.name)
+                    if spec is None:
+                        result = self.tools.execute(tool_call)
+                    else:
+                        decision = self.permission_checker.check(spec, tool_call)
+                        result = (
+                            self.tools.execute(tool_call)
+                            if decision.allowed
+                            else ToolResult(tool_call.id, False, error=decision.reason)
+                        )
                 self.messages.append(result.to_message())
 
             if self.turn_count >= self.max_turns:
